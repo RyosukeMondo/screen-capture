@@ -12,7 +12,13 @@ param (
     [switch]$RunOnce,
     
     [Parameter(Mandatory=$false)]
-    [switch]$CleanOnly
+    [switch]$CleanOnly,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$PrimaryOnly,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$ListScreens
 )
 
 # Initialize logging
@@ -71,6 +77,7 @@ function Get-Configuration {
             'output_directory' = Join-Path -Path $env:USERPROFILE -ChildPath 'screen_capture'
             'retention_days' = 7
             'image_quality' = 30
+            'scaling_factor' = 1.0  # Default scaling factor (1.0 = 100%)
         }
     }
     
@@ -100,6 +107,10 @@ function Get-Configuration {
         
         if ($configYaml -match 'image_quality:\s*(\d+)') {
             $defaultConfig['capture']['image_quality'] = [int]$Matches[1]
+        }
+        
+        if ($configYaml -match 'scaling_factor:\s*(\d+\.?\d*)') {
+            $defaultConfig['capture']['scaling_factor'] = [double]$Matches[1]
         }
         
         return $defaultConfig
@@ -142,57 +153,8 @@ function Initialize-OutputDirectory {
 }
 
 # Simple screen capture function
-function Get-ScreenCapture {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$OutputDirectory
-    )
-    
-    Write-Log "Taking screenshot" -Level 'Info'
-    
-    try {
-        # Load required assemblies
-        Add-Type -AssemblyName System.Windows.Forms
-        Add-Type -AssemblyName System.Drawing
-        
-        # Create timestamp for filename
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $outputPath = Join-Path -Path $OutputDirectory -ChildPath "screenshot_$timestamp.png"
-        
-        # Get primary screen information
-        $screen = [System.Windows.Forms.Screen]::PrimaryScreen
-        $width = $screen.Bounds.Width
-        $height = $screen.Bounds.Height
-        
-        Write-Log "Screen size: ${width}x${height}" -Level 'Info'
-        
-        # Create a bitmap
-        $bitmap = New-Object System.Drawing.Bitmap $width, $height
-        
-        # Create a graphics object
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        
-        # Copy the screen to the bitmap
-        $graphics.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
-        
-        # Save the image
-        Write-Log "Saving to $outputPath" -Level 'Info'
-        $bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
-        
-        # Release resources
-        $graphics.Dispose()
-        $bitmap.Dispose()
-        
-        Write-Log "Screenshot saved successfully" -Level 'Info'
-        return $outputPath
-    }
-    catch {
-        Write-Log "Screenshot failed: $_" -Level 'Error'
-        Write-Log "Exception details: $($_.Exception)" -Level 'Error'
-        return $null
-    }
-}
+# Import the Get-ScreenCapture function from its dedicated file
+. "$PSScriptRoot\Get-ScreenCapture.ps1"
 
 # Remove old images
 function Remove-OldImages {
@@ -240,20 +202,24 @@ function Start-ScreenCapture {
         [string]$OutputDir,
         
         [Parameter(Mandatory=$true)]
-        [int]$RetentionDays
+        [int]$RetentionDays,
+        
+        [Parameter(Mandatory=$false)]
+        [double]$ScalingFactor = 1.0
     )
     
     Write-Log "Starting screen capture monitoring" -Level 'Info'
     Write-Log "Saving screenshots to: $OutputDir" -Level 'Info'
     Write-Log "Capture interval: $Interval seconds" -Level 'Info'
     Write-Log "Retention period: $RetentionDays days" -Level 'Info'
+    Write-Log "Display scaling factor: $ScalingFactor" -Level 'Info'
     
     try {
         while ($true) {
             $startTime = Get-Date
             
             # Take screenshot
-            Get-ScreenCapture -OutputDirectory $OutputDir
+            Get-ScreenCapture -OutputDirectory $OutputDir -PrimaryOnly:$PrimaryOnly -ScalingFactor $ScalingFactor
             
             # Clean up old files once an hour
             if ((Get-Date).Minute -eq 0 -and (Get-Date).Second -lt $Interval) {
@@ -293,10 +259,39 @@ try {
         exit 0
     }
     
+    # Handle list screens only
+    if ($ListScreens) {
+        Write-Log "Listing available screens" -Level 'Info'
+        Add-Type -AssemblyName System.Windows.Forms
+        $screens = [System.Windows.Forms.Screen]::AllScreens
+        $screenCount = $screens.Count
+        
+        # Get virtual screen dimensions
+        $vLeft = [System.Windows.Forms.SystemInformation]::VirtualScreen.Left
+        $vTop = [System.Windows.Forms.SystemInformation]::VirtualScreen.Top
+        $vWidth = [System.Windows.Forms.SystemInformation]::VirtualScreen.Width
+        $vHeight = [System.Windows.Forms.SystemInformation]::VirtualScreen.Height
+        
+        Write-Log "Total monitors detected: $screenCount" -Level 'Info'
+        Write-Log "Virtual screen dimensions: Left=$vLeft, Top=$vTop, Width=$vWidth, Height=$vHeight" -Level 'Info'
+        
+        # Display information for each screen
+        for ($i = 0; $i -lt $screenCount; $i++) {
+            $screen = $screens[$i]
+            $isPrimary = if ($screen.Primary) { "(Primary)" } else { "" }
+            Write-Log "Screen $($i+1) $isPrimary" -Level 'Info'
+            Write-Log "  Device name: $($screen.DeviceName)" -Level 'Info'
+            Write-Log "  Bounds: X=$($screen.Bounds.X), Y=$($screen.Bounds.Y), Width=$($screen.Bounds.Width), Height=$($screen.Bounds.Height)" -Level 'Info'
+            Write-Log "  Working area: X=$($screen.WorkingArea.X), Y=$($screen.WorkingArea.Y), Width=$($screen.WorkingArea.Width), Height=$($screen.WorkingArea.Height)" -Level 'Info'
+            Write-Log "  BitsPerPixel: $($screen.BitsPerPixel)" -Level 'Info'
+        }
+        exit 0
+    }
+    
     # Handle single capture
     if ($RunOnce) {
         Write-Log "Running single capture" -Level 'Info'
-        Get-ScreenCapture -OutputDirectory $outputDir
+        Get-ScreenCapture -OutputDirectory $outputDir -PrimaryOnly:$PrimaryOnly -ScalingFactor $config['capture']['scaling_factor']
         exit 0
     }
     
@@ -304,7 +299,8 @@ try {
     Start-ScreenCapture `
         -Interval $config['capture']['interval_seconds'] `
         -OutputDir $outputDir `
-        -RetentionDays $config['capture']['retention_days']
+        -RetentionDays $config['capture']['retention_days'] `
+        -ScalingFactor $config['capture']['scaling_factor']
 }
 catch {
     Write-Log "Critical error: $_" -Level 'Error'

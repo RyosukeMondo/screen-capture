@@ -4,3 +4,4 @@ capture:
   output_directory: "%USERPROFILE%/screen_capture"  # Default output directory
   retention_days: 7  # How long to keep images before deletion
   image_quality: 30  # PNG quality (lower = smaller file size)
+  scaling_factor: 1.25  # Set to 125% to match system display scaling
